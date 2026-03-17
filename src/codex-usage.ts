@@ -67,16 +67,18 @@ export interface CodexUsageSnapshot {
 }
 
 interface PluginSettings {
-  codexExecutable: string
-  codexHome: string
-  sqliteExecutable: string
-  requestTimeoutMs: number
   cacheTtlSeconds: number
 }
 
 interface CacheEntry {
-  expiresAt: number
   snapshot: CodexUsageSnapshot
+}
+
+interface RuntimeSettings {
+  codexExecutable: string
+  codexHome: string
+  sqliteExecutable: string
+  requestTimeoutMs: number
 }
 
 interface UsageQueryOptions {
@@ -105,55 +107,56 @@ interface JsonRpcResponse {
 }
 
 export interface UsageProvider {
+  start(ctx: Context, api: PublicAPI): Promise<void>
   getSnapshot(ctx: Context, api: PublicAPI, options?: UsageQueryOptions): Promise<CodexUsageSnapshot>
+  refresh(ctx: Context, api: PublicAPI): Promise<CodexUsageSnapshot>
   invalidate(): void
 }
 
 export class CachedCodexUsageProvider implements UsageProvider {
   private cache: CacheEntry | null = null
   private inflight: Promise<CodexUsageSnapshot> | null = null
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null
+  private started = false
+
+  async start(ctx: Context, api: PublicAPI): Promise<void> {
+    if (this.started) {
+      return
+    }
+
+    this.started = true
+    this.triggerBackgroundRefresh(ctx, api)
+  }
 
   invalidate(): void {
     this.cache = null
   }
 
   async getSnapshot(ctx: Context, api: PublicAPI, options?: UsageQueryOptions): Promise<CodexUsageSnapshot> {
-    const settings = await this.readSettings(ctx, api)
-    const now = Date.now()
+    await this.start(ctx, api)
 
-    if (!options?.forceRefresh && this.cache !== null && this.cache.expiresAt > now) {
+    if (options?.forceRefresh) {
+      return this.refresh(ctx, api)
+    }
+
+    if (this.cache !== null) {
       return this.cache.snapshot
     }
 
-    if (!options?.forceRefresh && this.inflight !== null) {
-      return this.inflight
+    if (this.inflight === null) {
+      this.triggerBackgroundRefresh(ctx, api)
     }
 
-    const task = this.loadSnapshot(ctx, api, settings).then(
-      snapshot => {
-        this.cache = {
-          snapshot: snapshot,
-          expiresAt: Date.now() + settings.cacheTtlSeconds * 1000
-        }
-        this.inflight = null
-        return snapshot
-      },
-      error => {
-        this.inflight = null
-        throw error
-      }
-    )
-
-    this.inflight = task
-    return task
+    return createEmptySnapshot()
   }
 
-  private async loadSnapshot(ctx: Context, api: PublicAPI, settings: PluginSettings): Promise<CodexUsageSnapshot> {
+  private async loadSnapshot(ctx: Context, api: PublicAPI): Promise<CodexUsageSnapshot> {
     const warnings: string[] = []
     let appServer: AppServerSnapshot | null = null
+    const runtimeSettings = getRuntimeSettings()
 
     try {
-      appServer = await readFromAppServer(settings)
+      appServer = await readFromAppServer(runtimeSettings)
     } catch (error) {
       const message = toErrorMessage(error)
       warnings.push("app-server: " + message)
@@ -162,7 +165,7 @@ export class CachedCodexUsageProvider implements UsageProvider {
 
     let local: LocalUsageSummary | null = null
     try {
-      local = await readLocalUsage(settings)
+      local = await readLocalUsage(runtimeSettings)
     } catch (error) {
       const message = toErrorMessage(error)
       warnings.push("sqlite: " + message)
@@ -172,7 +175,7 @@ export class CachedCodexUsageProvider implements UsageProvider {
     let fallbackAccount: AccountInfo | null = null
     if (appServer === null || appServer.account === null) {
       try {
-        fallbackAccount = await readFallbackAccount(settings)
+        fallbackAccount = await readFallbackAccount(runtimeSettings)
       } catch (error) {
         const message = toErrorMessage(error)
         warnings.push("auth: " + message)
@@ -196,16 +199,93 @@ export class CachedCodexUsageProvider implements UsageProvider {
 
   private async readSettings(ctx: Context, api: PublicAPI): Promise<PluginSettings> {
     return {
-      codexExecutable: await readStringSetting(api, ctx, "codexExecutable", DEFAULT_CODEX_EXECUTABLE),
-      codexHome: expandHome(await readStringSetting(api, ctx, "codexHome", DEFAULT_CODEX_HOME)),
-      sqliteExecutable: await readStringSetting(api, ctx, "sqliteExecutable", DEFAULT_SQLITE_EXECUTABLE),
-      requestTimeoutMs: await readNumberSetting(api, ctx, "requestTimeoutMs", DEFAULT_REQUEST_TIMEOUT_MS),
       cacheTtlSeconds: await readNumberSetting(api, ctx, "cacheTtlSeconds", DEFAULT_CACHE_TTL_SECONDS)
+    }
+  }
+
+  async refresh(ctx: Context, api: PublicAPI): Promise<CodexUsageSnapshot> {
+    await this.start(ctx, api)
+    return this.performRefresh(ctx, api)
+  }
+
+  private triggerBackgroundRefresh(ctx: Context, api: PublicAPI): void {
+    if (this.inflight !== null) {
+      return
+    }
+
+    void this.performRefresh(ctx, api).catch(async error => {
+      await log(api, ctx, "Warning", "Background Codex usage refresh failed: " + toErrorMessage(error))
+    })
+  }
+
+  private async performRefresh(ctx: Context, api: PublicAPI): Promise<CodexUsageSnapshot> {
+    if (this.inflight !== null) {
+      return this.inflight
+    }
+
+    this.clearRefreshTimer()
+
+    const task = this.readSettings(ctx, api).then(async () => {
+      const snapshot = await this.loadSnapshot(ctx, api)
+      this.cache = {
+        snapshot: snapshot
+      }
+      return snapshot
+    })
+
+    this.inflight = task
+
+    try {
+      return await task
+    } finally {
+      this.inflight = null
+      await this.scheduleNextRefresh(ctx, api)
+    }
+  }
+
+  private async scheduleNextRefresh(ctx: Context, api: PublicAPI): Promise<void> {
+    if (!this.started) {
+      return
+    }
+
+    const settings = await this.readSettings(ctx, api)
+    this.clearRefreshTimer()
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null
+      this.triggerBackgroundRefresh(ctx, api)
+    }, settings.cacheTtlSeconds * 1000)
+  }
+
+  private clearRefreshTimer(): void {
+    if (this.refreshTimer !== null) {
+      clearTimeout(this.refreshTimer)
+      this.refreshTimer = null
     }
   }
 }
 
-async function readFromAppServer(settings: PluginSettings): Promise<AppServerSnapshot> {
+function getRuntimeSettings(): RuntimeSettings {
+  return {
+    codexExecutable: DEFAULT_CODEX_EXECUTABLE,
+    codexHome: expandHome(DEFAULT_CODEX_HOME),
+    sqliteExecutable: DEFAULT_SQLITE_EXECUTABLE,
+    requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS
+  }
+}
+
+function createEmptySnapshot(): CodexUsageSnapshot {
+  return {
+    fetchedAt: Date.now(),
+    source: "local-fallback",
+    userAgent: null,
+    account: null,
+    rateLimits: null,
+    local: null,
+    warnings: []
+  }
+}
+
+async function readFromAppServer(settings: RuntimeSettings): Promise<AppServerSnapshot> {
   const requests: JsonRpcRequest[] = [
     {
       id: "initialize",
@@ -431,7 +511,7 @@ function readCredits(value: unknown): CreditsInfo | null {
   }
 }
 
-async function readFallbackAccount(settings: PluginSettings): Promise<AccountInfo | null> {
+async function readFallbackAccount(settings: RuntimeSettings): Promise<AccountInfo | null> {
   const authFilePath = join(settings.codexHome, "auth.json")
   const auth = JSON.parse(await readFile(authFilePath, "utf8")) as Record<string, unknown>
   const authMode = typeof auth.auth_mode === "string" ? auth.auth_mode : "unknown"
@@ -462,7 +542,7 @@ async function readFallbackAccount(settings: PluginSettings): Promise<AccountInf
   }
 }
 
-async function readLocalUsage(settings: PluginSettings): Promise<LocalUsageSummary | null> {
+async function readLocalUsage(settings: RuntimeSettings): Promise<LocalUsageSummary | null> {
   const databasePath = join(settings.codexHome, "state_5.sqlite")
   await access(databasePath)
 

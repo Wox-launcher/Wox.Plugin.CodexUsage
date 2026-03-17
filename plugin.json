@@ -72,89 +72,10 @@
     {
       "Type": "textbox",
       "Value": {
-        "Key": "codexExecutable",
-        "Label": "Codex executable",
-        "DefaultValue": "codex",
-        "Tooltip": "Command or absolute path to the Codex CLI binary.",
-        "MaxLines": 1,
-        "Validators": [
-          {
-            "Type": "not_empty",
-            "Value": {}
-          }
-        ],
-        "Style": {
-          "Width": 420
-        }
-      }
-    },
-    {
-      "Type": "textbox",
-      "Value": {
-        "Key": "codexHome",
-        "Label": "Codex home",
-        "DefaultValue": "~/.codex",
-        "Tooltip": "Directory that contains auth.json and state_5.sqlite.",
-        "MaxLines": 1,
-        "Validators": [
-          {
-            "Type": "not_empty",
-            "Value": {}
-          }
-        ],
-        "Style": {
-          "Width": 420
-        }
-      }
-    },
-    {
-      "Type": "textbox",
-      "Value": {
-        "Key": "sqliteExecutable",
-        "Label": "SQLite executable",
-        "DefaultValue": "sqlite3",
-        "Tooltip": "Optional sqlite3 CLI path used for local history fallback.",
-        "MaxLines": 1,
-        "Validators": [
-          {
-            "Type": "not_empty",
-            "Value": {}
-          }
-        ],
-        "Style": {
-          "Width": 420
-        }
-      }
-    },
-    {
-      "Type": "textbox",
-      "Value": {
-        "Key": "requestTimeoutMs",
-        "Label": "Request timeout (ms)",
-        "DefaultValue": "4000",
-        "Tooltip": "Timeout for each Codex CLI or sqlite subprocess.",
-        "MaxLines": 1,
-        "Validators": [
-          {
-            "Type": "is_number",
-            "Value": {
-              "IsInteger": true,
-              "IsFloat": false
-            }
-          }
-        ],
-        "Style": {
-          "Width": 240
-        }
-      }
-    },
-    {
-      "Type": "textbox",
-      "Value": {
         "Key": "cacheTtlSeconds",
-        "Label": "Cache TTL (seconds)",
-        "DefaultValue": "15",
-        "Tooltip": "Reuse the last fetched usage snapshot for this many seconds.",
+        "Label": "Refresh interval (seconds)",
+        "DefaultValue": "180",
+        "Tooltip": "Refresh the cached usage snapshot in the background at this interval.",
         "MaxLines": 1,
         "Validators": [
           {

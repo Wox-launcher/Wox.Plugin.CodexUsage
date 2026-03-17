@@ -51,6 +51,7 @@ export class CodexUsagePlugin implements Plugin {
 
   async init(ctx: Context, initParams: PluginInitParams): Promise<void> {
     this.api = initParams.API
+    await this.provider.start(ctx, this.api)
     await safeLog(this.api, ctx, "Info", "Codex Usage plugin initialized")
   }
 
@@ -62,9 +63,7 @@ export class CodexUsagePlugin implements Plugin {
     const forceRefresh = shouldForceRefresh(query.Search)
 
     try {
-      const snapshot = await this.provider.getSnapshot(ctx, this.api, {
-        forceRefresh: forceRefresh
-      })
+      const snapshot = forceRefresh ? await this.provider.refresh(ctx, this.api) : await this.provider.getSnapshot(ctx, this.api)
       return await buildResults(snapshot, this.api, ctx, this.provider)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -172,8 +171,12 @@ function buildCommonActions(summaryText: string, rawText: string, api: PublicAPI
       },
       PreventHideAfterAction: true,
       Action: async actionCtx => {
-        provider.invalidate()
         await safeLog(api, ctx, "Info", "Refreshing Codex usage")
+        try {
+          await provider.refresh(ctx, api)
+        } catch (error) {
+          await safeLog(api, ctx, "Warning", "Manual Codex usage refresh failed: " + (error instanceof Error ? error.message : String(error)))
+        }
         if (typeof api.RefreshQuery === "function") {
           await api.RefreshQuery(actionCtx, {
             PreserveSelectedIndex: true
@@ -208,8 +211,12 @@ function buildErrorResult(message: string, api: PublicAPI, ctx: Context, provide
         Name: "i18n:action_retry",
         PreventHideAfterAction: true,
         Action: async actionCtx => {
-          provider.invalidate()
           await safeLog(api, ctx, "Warning", "Retrying Codex usage fetch after error")
+          try {
+            await provider.refresh(ctx, api)
+          } catch (error) {
+            await safeLog(api, ctx, "Warning", "Codex usage retry failed: " + (error instanceof Error ? error.message : String(error)))
+          }
           if (typeof api.RefreshQuery === "function") {
             await api.RefreshQuery(actionCtx, {
               PreserveSelectedIndex: false
