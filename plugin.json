@@ -1,14 +1,174 @@
 {
-  "Id": "[Id]",
-  "TriggerKeywords": ["[Trigger Keyword]"],
-  "Name": "[Name]",
-  "Description": "[Description]",
-  "Author": "[Author Name]",
-  "Version": "0.0.1",
+  "Id": "2f326a0c-cd9f-4ddf-9b45-f8abf082283f",
+  "TriggerKeywords": [
+    "cusage",
+    "codexu"
+  ],
+  "Name": "i18n:plugin_name",
+  "Description": "i18n:plugin_desc",
+  "Author": "Wox-launcher",
+  "Version": "0.1.0",
   "MinWoxVersion": "2.0.0",
   "Runtime": "nodejs",
-  "Website": "[Website]",
+  "Website": "https://github.com/Wox-launcher/Wox.Plugin.CodexUsage",
   "Entry": "index.js",
-  "Icon": "relative:images/app.png",
-  "SupportedOS": ["windows", "linux", "darwin"]
+  "Icon": "relative:images/app.svg",
+  "I18n": {
+    "en_US": {
+      "plugin_name": "Codex Usage",
+      "plugin_desc": "Show Codex rate limits inside Wox.",
+      "result_title": "Codex Usage",
+      "action_copy_summary": "Copy summary",
+      "action_copy_json": "Copy raw JSON",
+      "action_refresh": "Refresh",
+      "error_title": "Codex usage unavailable",
+      "action_copy_error": "Copy error",
+      "action_retry": "Retry",
+      "subtitle_no_live_data": "No live rate limit data",
+      "subtitle_fallback": "fallback",
+      "subtitle_reset_in": "%s reset in %s",
+      "window_primary": "5H",
+      "window_secondary": "Week",
+      "summary_line": "%s left %s, reset in %s",
+      "summary_warnings": "Warnings: %s",
+      "time_unknown": "unknown",
+      "time_soon": "soon",
+      "unit_day_short": "d",
+      "unit_hour_short": "h",
+      "unit_minute_short": "m",
+      "duration_joiner": " "
+    },
+    "zh_CN": {
+      "plugin_name": "Codex Usage",
+      "plugin_desc": "在 Wox 中显示 Codex 限额用量。",
+      "result_title": "Codex Usage",
+      "action_copy_summary": "复制摘要",
+      "action_copy_json": "复制原始 JSON",
+      "action_refresh": "刷新",
+      "error_title": "Codex 用量不可用",
+      "action_copy_error": "复制错误",
+      "action_retry": "重试",
+      "subtitle_no_live_data": "暂无实时限额数据",
+      "subtitle_fallback": "回退",
+      "subtitle_reset_in": "%s重置还剩%s",
+      "window_primary": "5H",
+      "window_secondary": "周",
+      "summary_line": "%s 剩余%s，重置还剩%s",
+      "summary_warnings": "警告：%s",
+      "time_unknown": "未知",
+      "time_soon": "即将",
+      "unit_day_short": "天",
+      "unit_hour_short": "小时",
+      "unit_minute_short": "分钟",
+      "duration_joiner": ""
+    }
+  },
+  "SupportedOS": [
+    "windows",
+    "linux",
+    "darwin"
+  ],
+  "SettingDefinitions": [
+    {
+      "Type": "textbox",
+      "Value": {
+        "Key": "codexExecutable",
+        "Label": "Codex executable",
+        "DefaultValue": "codex",
+        "Tooltip": "Command or absolute path to the Codex CLI binary.",
+        "MaxLines": 1,
+        "Validators": [
+          {
+            "Type": "not_empty",
+            "Value": {}
+          }
+        ],
+        "Style": {
+          "Width": 420
+        }
+      }
+    },
+    {
+      "Type": "textbox",
+      "Value": {
+        "Key": "codexHome",
+        "Label": "Codex home",
+        "DefaultValue": "~/.codex",
+        "Tooltip": "Directory that contains auth.json and state_5.sqlite.",
+        "MaxLines": 1,
+        "Validators": [
+          {
+            "Type": "not_empty",
+            "Value": {}
+          }
+        ],
+        "Style": {
+          "Width": 420
+        }
+      }
+    },
+    {
+      "Type": "textbox",
+      "Value": {
+        "Key": "sqliteExecutable",
+        "Label": "SQLite executable",
+        "DefaultValue": "sqlite3",
+        "Tooltip": "Optional sqlite3 CLI path used for local history fallback.",
+        "MaxLines": 1,
+        "Validators": [
+          {
+            "Type": "not_empty",
+            "Value": {}
+          }
+        ],
+        "Style": {
+          "Width": 420
+        }
+      }
+    },
+    {
+      "Type": "textbox",
+      "Value": {
+        "Key": "requestTimeoutMs",
+        "Label": "Request timeout (ms)",
+        "DefaultValue": "4000",
+        "Tooltip": "Timeout for each Codex CLI or sqlite subprocess.",
+        "MaxLines": 1,
+        "Validators": [
+          {
+            "Type": "is_number",
+            "Value": {
+              "IsInteger": true,
+              "IsFloat": false
+            }
+          }
+        ],
+        "Style": {
+          "Width": 240
+        }
+      }
+    },
+    {
+      "Type": "textbox",
+      "Value": {
+        "Key": "cacheTtlSeconds",
+        "Label": "Cache TTL (seconds)",
+        "DefaultValue": "15",
+        "Tooltip": "Reuse the last fetched usage snapshot for this many seconds.",
+        "MaxLines": 1,
+        "Validators": [
+          {
+            "Type": "is_number",
+            "Value": {
+              "IsInteger": true,
+              "IsFloat": false
+            }
+          }
+        ],
+        "Style": {
+          "Width": 240
+        }
+      }
+    }
+  ]
 }
