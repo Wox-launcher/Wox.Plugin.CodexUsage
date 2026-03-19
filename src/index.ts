@@ -154,9 +154,9 @@ function renderProgressSvg(label: string, remaining: number | null): string {
 
   return [
     '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="18" viewBox="0 0 96 18">',
-    '<rect x="0.5" y="0.5" width="95" height="17" rx="' + radius + '" fill="#3b4354" stroke="#687084"/>',
+    '<rect x="0.5" y="0.5" width="95" height="17" rx="' + radius + '" fill="#ffffff" stroke="#687084"/>',
     '<rect x="1" y="1" width="' + fillWidth + '" height="16" rx="' + (radius - 1) + '" fill="' + fillColor + '"/>',
-    '<text x="48" y="12.4" text-anchor="middle" font-family="Arial, sans-serif" font-size="9.5" fill="#f5f7fb">' + escapeXml(label + " " + percentText) + "</text>",
+    '<text x="48" y="12.4" text-anchor="middle" font-family="Arial, sans-serif" font-size="9.5" fill="#1f2937">' + escapeXml(label + " " + percentText) + "</text>",
     "</svg>"
   ].join("")
 }
