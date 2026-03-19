@@ -1,11 +1,13 @@
 import { execFile, spawn } from "child_process"
 import { access, readFile } from "fs/promises"
-import { homedir } from "os"
 import { join } from "path"
 import { createInterface } from "readline"
 import { promisify } from "util"
 
 import { Context, PublicAPI } from "@wox-launcher/wox-plugin"
+
+import { getPlatformRuntime } from "./platform"
+import { CommandLaunchSpec, RuntimeSettings } from "./platform/types"
 
 const execFileAsync = promisify(execFile)
 
@@ -14,9 +16,7 @@ const PLUGIN_VERSION = "0.1.0"
 
 const DEFAULT_CACHE_TTL_SECONDS = 15
 const DEFAULT_REQUEST_TIMEOUT_MS = 4000
-const DEFAULT_CODEX_EXECUTABLE = "codex"
-const DEFAULT_SQLITE_EXECUTABLE = "sqlite3"
-const DEFAULT_CODEX_HOME = "~/.codex"
+const platformRuntime = getPlatformRuntime()
 
 export interface AccountInfo {
   mode: "chatgpt" | "apiKey" | "unknown"
@@ -72,13 +72,6 @@ interface PluginSettings {
 
 interface CacheEntry {
   snapshot: CodexUsageSnapshot
-}
-
-interface RuntimeSettings {
-  codexExecutable: string
-  codexHome: string
-  sqliteExecutable: string
-  requestTimeoutMs: number
 }
 
 interface UsageQueryOptions {
@@ -265,12 +258,7 @@ export class CachedCodexUsageProvider implements UsageProvider {
 }
 
 function getRuntimeSettings(): RuntimeSettings {
-  return {
-    codexExecutable: DEFAULT_CODEX_EXECUTABLE,
-    codexHome: expandHome(DEFAULT_CODEX_HOME),
-    sqliteExecutable: DEFAULT_SQLITE_EXECUTABLE,
-    requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS
-  }
+  return platformRuntime.getRuntimeSettings(DEFAULT_REQUEST_TIMEOUT_MS)
 }
 
 function createEmptySnapshot(): CodexUsageSnapshot {
@@ -322,11 +310,26 @@ async function readFromAppServer(settings: RuntimeSettings): Promise<AppServerSn
 }
 
 async function runJsonRpcSession(executable: string, timeoutMs: number, requests: JsonRpcRequest[]): Promise<Record<string, unknown>> {
+  const launchSpecs = platformRuntime.getCodexLaunchSpecs(executable)
+  let lastError: Error | null = null
+
+  for (let index = 0; index < launchSpecs.length; index += 1) {
+    try {
+      return await runJsonRpcSessionWithLaunchSpec(launchSpecs[index], timeoutMs, requests)
+    } catch (error) {
+      lastError = ensureError(error)
+      if (!shouldTryNextCommand(lastError, index, launchSpecs.length)) {
+        throw lastError
+      }
+    }
+  }
+
+  throw lastError || new Error("Unable to start Codex app-server")
+}
+
+async function runJsonRpcSessionWithLaunchSpec(launchSpec: CommandLaunchSpec, timeoutMs: number, requests: JsonRpcRequest[]): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ["app-server"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: process.env
-    })
+    const child = spawn(launchSpec.command, launchSpec.args, launchSpec.options)
 
     const responseMap: Record<string, unknown> = {}
     const pendingIds: Record<string, boolean> = {}
@@ -379,7 +382,7 @@ async function runJsonRpcSession(executable: string, timeoutMs: number, requests
       child.kill()
     }
 
-    child.on("error", error => {
+    child.on("error", (error: Error) => {
       finishWithError(error)
     })
 
@@ -396,7 +399,7 @@ async function runJsonRpcSession(executable: string, timeoutMs: number, requests
       finishWithSuccess()
     })
 
-    stdoutReader.on("line", line => {
+    stdoutReader.on("line", (line: string) => {
       if (line.trim().length === 0 || line.charAt(0) !== "{") {
         return
       }
@@ -425,7 +428,7 @@ async function runJsonRpcSession(executable: string, timeoutMs: number, requests
       }
     })
 
-    stderrReader.on("line", line => {
+    stderrReader.on("line", (line: string) => {
       const trimmed = line.trim()
       if (trimmed.length > 0) {
         stderrLines.push(trimmed)
@@ -549,8 +552,8 @@ async function readLocalUsage(settings: RuntimeSettings): Promise<LocalUsageSumm
   const summaryQuery = "select count(*), sum(case when archived = 0 then 1 else 0 end), coalesce(sum(tokens_used), 0), coalesce(max(updated_at), 0) from threads;"
   const sourcesQuery = "select source, count(*), coalesce(sum(tokens_used), 0) from threads group by source order by coalesce(sum(tokens_used), 0) desc;"
 
-  const summaryResult = await runExecFile(settings.sqliteExecutable, [databasePath, summaryQuery], settings.requestTimeoutMs)
-  const sourcesResult = await runExecFile(settings.sqliteExecutable, [databasePath, sourcesQuery], settings.requestTimeoutMs)
+  const summaryResult = await runSqliteExecFile(settings.sqliteExecutable, [databasePath, summaryQuery], settings.requestTimeoutMs)
+  const sourcesResult = await runSqliteExecFile(settings.sqliteExecutable, [databasePath, sourcesQuery], settings.requestTimeoutMs)
 
   const summaryLine = firstNonEmptyLine(summaryResult.stdout)
   if (summaryLine === null) {
@@ -618,6 +621,24 @@ async function runExecFile(command: string, args: string[], timeoutMs: number): 
   })
 }
 
+async function runSqliteExecFile(command: string, args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
+  const candidates = platformRuntime.getSqliteExecutableCandidates(command)
+  let lastError: Error | null = null
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    try {
+      return await runExecFile(candidates[index], args, timeoutMs)
+    } catch (error) {
+      lastError = ensureError(error)
+      if (!shouldTryNextCommand(lastError, index, candidates.length)) {
+        throw lastError
+      }
+    }
+  }
+
+  throw lastError || new Error("Unable to run sqlite command")
+}
+
 async function log(api: PublicAPI, ctx: Context, level: "Info" | "Warning" | "Error" | "Debug", message: string): Promise<void> {
   if (typeof api.Log !== "function") {
     return
@@ -628,18 +649,6 @@ async function log(api: PublicAPI, ctx: Context, level: "Info" | "Warning" | "Er
   } catch {
     return
   }
-}
-
-function expandHome(input: string): string {
-  if (input === "~") {
-    return homedir()
-  }
-
-  if (input.indexOf("~/") === 0) {
-    return join(homedir(), input.slice(2))
-  }
-
-  return input
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
@@ -705,6 +714,23 @@ function toErrorMessage(error: unknown): string {
   }
 
   return String(error)
+}
+
+function ensureError(error: unknown): Error {
+  if (error instanceof Error) {
+    return error
+  }
+
+  return new Error(String(error))
+}
+
+function shouldTryNextCommand(error: Error, index: number, total: number): boolean {
+  if (index >= total - 1) {
+    return false
+  }
+
+  const message = error.message.toLowerCase()
+  return message.indexOf("enoent") >= 0 || message.indexOf("spawn") >= 0 || message.indexOf("not recognized as an internal or external command") >= 0 || message.indexOf("cannot find the file") >= 0
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

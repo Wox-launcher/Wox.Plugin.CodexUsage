@@ -147,6 +147,7 @@ function buildProgressTail(label: string, window: RateLimitWindowInfo | null): R
 function renderProgressSvg(label: string, remaining: number | null): string {
   const percentText = remaining === null ? "--" : String(remaining) + "%"
   const safeRemaining = remaining === null ? 0 : clamp(remaining, 0, 100)
+  const fillColor = getProgressFillColor(remaining)
   const width = 96
   const radius = 9
   const fillWidth = Math.round(((width - 2) * safeRemaining) / 100)
@@ -154,10 +155,22 @@ function renderProgressSvg(label: string, remaining: number | null): string {
   return [
     '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="18" viewBox="0 0 96 18">',
     '<rect x="0.5" y="0.5" width="95" height="17" rx="' + radius + '" fill="#3b4354" stroke="#687084"/>',
-    '<rect x="1" y="1" width="' + fillWidth + '" height="16" rx="' + (radius - 1) + '" fill="#9bc27d"/>',
+    '<rect x="1" y="1" width="' + fillWidth + '" height="16" rx="' + (radius - 1) + '" fill="' + fillColor + '"/>',
     '<text x="48" y="12.4" text-anchor="middle" font-family="Arial, sans-serif" font-size="9.5" fill="#f5f7fb">' + escapeXml(label + " " + percentText) + "</text>",
     "</svg>"
   ].join("")
+}
+
+function getProgressFillColor(remaining: number | null): string {
+  if (remaining !== null && remaining < 10) {
+    return "#d95c5c"
+  }
+
+  if (remaining !== null && remaining < 30) {
+    return "#d8b24c"
+  }
+
+  return "#9bc27d"
 }
 
 function buildCommonActions(summaryText: string, rawText: string, api: PublicAPI, ctx: Context, provider: UsageProvider): ResultAction[] {
