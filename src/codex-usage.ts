@@ -99,6 +99,14 @@ interface JsonRpcResponse {
   }
 }
 
+interface JsonRpcSessionResponse {
+  result?: unknown
+  error?: {
+    code?: number
+    message?: string
+  }
+}
+
 export interface UsageProvider {
   start(ctx: Context, api: PublicAPI): Promise<void>
   getSnapshot(ctx: Context, api: PublicAPI, options?: UsageQueryOptions): Promise<CodexUsageSnapshot>
@@ -298,18 +306,25 @@ async function readFromAppServer(settings: RuntimeSettings): Promise<AppServerSn
 
   const responses = await runJsonRpcSession(settings.codexExecutable, settings.requestTimeoutMs, requests)
 
-  const initializeResult = responses.initialize
-  const accountResult = responses.account
-  const rateLimitsResult = responses.rateLimits
+  const initializeResult = readRequiredJsonRpcResult(responses.initialize, "initialize")
+  const accountResult = readOptionalJsonRpcResult(responses.account)
+  const rateLimitsResponse = responses.rateLimits
+  const rateLimitsResult = readOptionalJsonRpcResult(rateLimitsResponse)
+  const rateLimitsFromResult = readRateLimitsResult(rateLimitsResult)
+  const rateLimitsFromError = rateLimitsFromResult === null ? readRateLimitsFromError(rateLimitsResponse) : null
+
+  if (rateLimitsFromResult === null && rateLimitsFromError === null && rateLimitsResponse !== undefined && rateLimitsResponse.error !== undefined) {
+    throw new Error("Codex app-server returned an error for rateLimits: " + (rateLimitsResponse.error.message || "unknown"))
+  }
 
   return {
     userAgent: readUserAgent(initializeResult),
     account: readAccountResult(accountResult),
-    rateLimits: readRateLimitsResult(rateLimitsResult)
+    rateLimits: rateLimitsFromResult !== null ? rateLimitsFromResult : rateLimitsFromError
   }
 }
 
-async function runJsonRpcSession(executable: string, timeoutMs: number, requests: JsonRpcRequest[]): Promise<Record<string, unknown>> {
+async function runJsonRpcSession(executable: string, timeoutMs: number, requests: JsonRpcRequest[]): Promise<Record<string, JsonRpcSessionResponse>> {
   const launchSpecs = platformRuntime.getCodexLaunchSpecs(executable)
   let lastError: Error | null = null
 
@@ -327,11 +342,11 @@ async function runJsonRpcSession(executable: string, timeoutMs: number, requests
   throw lastError || new Error("Unable to start Codex app-server")
 }
 
-async function runJsonRpcSessionWithLaunchSpec(launchSpec: CommandLaunchSpec, timeoutMs: number, requests: JsonRpcRequest[]): Promise<Record<string, unknown>> {
+async function runJsonRpcSessionWithLaunchSpec(launchSpec: CommandLaunchSpec, timeoutMs: number, requests: JsonRpcRequest[]): Promise<Record<string, JsonRpcSessionResponse>> {
   return new Promise((resolve, reject) => {
     const child = spawn(launchSpec.command, launchSpec.args, launchSpec.options)
 
-    const responseMap: Record<string, unknown> = {}
+    const responseMap: Record<string, JsonRpcSessionResponse> = {}
     const pendingIds: Record<string, boolean> = {}
     const stderrLines: string[] = []
     let settled = false
@@ -396,6 +411,12 @@ async function runJsonRpcSessionWithLaunchSpec(launchSpec: CommandLaunchSpec, ti
         return
       }
 
+      const pendingResponseIds = Object.keys(pendingIds)
+      if (pendingResponseIds.length > 0) {
+        finishWithError(new Error("Codex app-server exited before returning responses: " + pendingResponseIds.join(", ")))
+        return
+      }
+
       finishWithSuccess()
     })
 
@@ -415,12 +436,7 @@ async function runJsonRpcSessionWithLaunchSpec(launchSpec: CommandLaunchSpec, ti
         return
       }
 
-      if (response.error !== undefined) {
-        finishWithError(new Error("Codex app-server returned an error for " + response.id + ": " + (response.error.message || "unknown")))
-        return
-      }
-
-      responseMap[response.id] = response.result
+      responseMap[response.id] = response.error !== undefined ? { error: response.error } : { result: response.result }
       delete pendingIds[response.id]
 
       if (Object.keys(pendingIds).length === 0) {
@@ -512,6 +528,151 @@ function readCredits(value: unknown): CreditsInfo | null {
     unlimited: value.unlimited,
     balance: typeof value.balance === "string" ? value.balance : null
   }
+}
+
+function readRateLimitsFromError(response: JsonRpcSessionResponse | undefined): RateLimitsInfo | null {
+  if (response === undefined || response.error === undefined || typeof response.error.message !== "string") {
+    return null
+  }
+
+  const body = parseJsonBodyFromErrorMessage(response.error.message)
+  return readRateLimitsFromUsageBody(body)
+}
+
+function readRateLimitsFromUsageBody(value: unknown): RateLimitsInfo | null {
+  if (!isRecord(value) || !isRecord(value.rate_limit)) {
+    return null
+  }
+
+  const rateLimit = value.rate_limit
+  const credits = readRawCredits(value.credits)
+  const primary = readRawRateLimitWindow(rateLimit.primary_window)
+  const secondary = readRawRateLimitWindow(rateLimit.secondary_window)
+  const planType = typeof value.plan_type === "string" ? value.plan_type : null
+
+  if (primary === null && secondary === null && credits === null && planType === null) {
+    return null
+  }
+
+  return {
+    primary: primary,
+    secondary: secondary,
+    credits: credits,
+    planType: planType
+  }
+}
+
+function readRawRateLimitWindow(value: unknown): RateLimitWindowInfo | null {
+  if (!isRecord(value) || typeof value.used_percent !== "number") {
+    return null
+  }
+
+  const windowSeconds = typeof value.limit_window_seconds === "number" ? value.limit_window_seconds : null
+  const resetAfterSeconds = typeof value.reset_after_seconds === "number" ? value.reset_after_seconds : null
+
+  return {
+    usedPercent: value.used_percent,
+    windowDurationMins: windowSeconds !== null ? Math.floor(windowSeconds / 60) : null,
+    resetsAt: typeof value.reset_at === "number" ? value.reset_at : resetAfterSeconds !== null ? Math.floor(Date.now() / 1000) + resetAfterSeconds : null
+  }
+}
+
+function readRawCredits(value: unknown): CreditsInfo | null {
+  if (!isRecord(value) || typeof value.has_credits !== "boolean" || typeof value.unlimited !== "boolean") {
+    return null
+  }
+
+  return {
+    hasCredits: value.has_credits,
+    unlimited: value.unlimited,
+    balance: typeof value.balance === "string" ? value.balance : null
+  }
+}
+
+function parseJsonBodyFromErrorMessage(message: string): unknown {
+  const markerIndex = message.indexOf("body=")
+  if (markerIndex < 0) {
+    return null
+  }
+
+  const jsonStart = message.indexOf("{", markerIndex + "body=".length)
+  if (jsonStart < 0) {
+    return null
+  }
+
+  const jsonEnd = findJsonObjectEnd(message, jsonStart)
+  if (jsonEnd < 0) {
+    return null
+  }
+
+  try {
+    return JSON.parse(message.slice(jsonStart, jsonEnd + 1)) as unknown
+  } catch {
+    return null
+  }
+}
+
+function findJsonObjectEnd(value: string, start: number): number {
+  let depth = 0
+  let inString = false
+  let escaping = false
+
+  for (let index = start; index < value.length; index += 1) {
+    const character = value.charAt(index)
+
+    if (escaping) {
+      escaping = false
+      continue
+    }
+
+    if (character === "\\") {
+      escaping = inString
+      continue
+    }
+
+    if (character === '"') {
+      inString = !inString
+      continue
+    }
+
+    if (inString) {
+      continue
+    }
+
+    if (character === "{") {
+      depth += 1
+      continue
+    }
+
+    if (character === "}") {
+      depth -= 1
+      if (depth === 0) {
+        return index
+      }
+    }
+  }
+
+  return -1
+}
+
+function readRequiredJsonRpcResult(response: JsonRpcSessionResponse | undefined, id: string): unknown {
+  if (response === undefined) {
+    throw new Error("Codex app-server did not return a response for " + id)
+  }
+
+  if (response.error !== undefined) {
+    throw new Error("Codex app-server returned an error for " + id + ": " + (response.error.message || "unknown"))
+  }
+
+  return response.result
+}
+
+function readOptionalJsonRpcResult(response: JsonRpcSessionResponse | undefined): unknown {
+  if (response === undefined || response.error !== undefined) {
+    return undefined
+  }
+
+  return response.result
 }
 
 async function readFallbackAccount(settings: RuntimeSettings): Promise<AccountInfo | null> {
